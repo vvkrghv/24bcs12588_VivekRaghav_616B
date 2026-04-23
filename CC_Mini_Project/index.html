@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Smart Sorting Studio</title>
+  <!--
+    engine.js is the Emscripten-compiled WASM glue.
+    If it hasn't been compiled yet, the app falls back to JS implementations
+    automatically (see wasmReady / jsSort() below).
+  -->
+  <script src="engine.js" onerror="window.wasmFailed=true"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:#07080f; --surf:#0d0f1a; --border:#1c2035; --borderl:#2e3554;
+      --text:#c9cfe8; --muted:#505880; --white:#edf0ff;
+      --merge:#38bdf8; --quick:#fb923c; --heap:#a78bfa;
+      --count:#34d399; --radix:#f472b6; --bucket:#facc15;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh;overflow-x:hidden}
+    body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");pointer-events:none;z-index:0;opacity:.4}
+
+    /* ── HOME ── */
+    #page-home{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4rem 2rem}
+    .hero{text-align:center;margin-bottom:3.5rem}
+    .hero-eye{font-family:'Space Mono',monospace;font-size:.62rem;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:1rem}
+    .hero h1{font-size:clamp(2.4rem,6vw,5rem);font-weight:800;line-height:1;letter-spacing:-.03em;color:var(--white);margin-bottom:.7rem}
+    .hero h1 span{color:var(--merge)}
+    .hero p{font-size:.88rem;color:var(--muted);max-width:480px;margin:0 auto;line-height:1.7}
+    .wasm-badge{display:inline-block;margin-top:.9rem;font-family:'Space Mono',monospace;font-size:.58rem;padding:3px 12px;border-radius:99px;letter-spacing:.12em}
+    .wasm-badge.ok{background:color-mix(in srgb,#34d399 12%,transparent);color:#34d399;border:1px solid color-mix(in srgb,#34d399 25%,transparent)}
+    .wasm-badge.js{background:color-mix(in srgb,var(--bucket) 12%,transparent);color:var(--bucket);border:1px solid color-mix(in srgb,var(--bucket) 25%,transparent)}
+
+    .algo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;max-width:900px;width:100%}
+    @media(max-width:640px){.algo-grid{grid-template-columns:1fr 1fr}}
+
+    .algo-card{cursor:pointer;background:var(--surf);border:1px solid var(--border);border-radius:20px;padding:1.8rem 1.5rem;transition:transform .18s,border-color .18s,box-shadow .18s;position:relative;overflow:hidden}
+    .algo-card::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 20% 20%,var(--cc,#fff) 0%,transparent 70%);opacity:0;transition:opacity .3s}
+    .algo-card:hover{transform:translateY(-4px);border-color:var(--cc,#fff);box-shadow:0 0 32px -6px var(--cc,#fff)}
+    .algo-card:hover::before{opacity:.05}
+    .algo-icon{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-family:'Space Mono',monospace;font-weight:700;font-size:.9rem;margin-bottom:1.2rem;background:color-mix(in srgb,var(--cc,#fff) 12%,transparent);color:var(--cc,#fff);transition:background .2s,color .2s}
+    .algo-card:hover .algo-icon{background:var(--cc,#fff);color:#000}
+    .algo-card h3{font-size:1rem;font-weight:700;color:var(--white);margin-bottom:.35rem}
+    .algo-card p{font-size:.74rem;color:var(--muted);line-height:1.5}
+    .algo-badge{position:absolute;top:1rem;right:1rem;font-family:'Space Mono',monospace;font-size:.54rem;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:99px;background:color-mix(in srgb,var(--cc,#fff) 10%,transparent);color:var(--cc,#fff);border:1px solid color-mix(in srgb,var(--cc,#fff) 25%,transparent)}
+
+    /* ── VISUALIZER ── */
+    #page-visualizer{position:relative;z-index:1;min-height:100vh;padding:2rem;display:none}
+    .viz-wrap{max-width:1200px;margin:0 auto}
+
+    .top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:2.5rem;flex-wrap:wrap;gap:1rem}
+    .back-btn{font-family:'Space Mono',monospace;font-size:.72rem;color:var(--muted);cursor:pointer;border:none;background:none;transition:color .15s;letter-spacing:.05em}
+    .back-btn:hover{color:var(--white)}
+    .algo-label span.sub{font-family:'Space Mono',monospace;font-size:.65rem;letter-spacing:.15em;color:var(--muted);display:block;font-weight:400;text-transform:uppercase;margin-bottom:.15rem}
+    .algo-label .name{font-size:1.4rem;font-weight:800;color:var(--white);letter-spacing:-.02em}
+
+    .controls{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+    select,.run-btn{font-family:'Syne',sans-serif;font-size:.8rem;border-radius:10px;outline:none;border:1px solid var(--borderl);background:var(--surf);color:var(--text);padding:.6rem 1rem;cursor:pointer;transition:border-color .15s}
+    select:hover,select:focus{border-color:var(--merge)}
+    .run-btn{background:var(--merge);color:#000;font-weight:700;border:none;padding:.65rem 1.6rem;transition:opacity .15s,transform .1s}
+    .run-btn:hover{opacity:.82}
+    .run-btn:active{transform:scale(.97)}
+    .run-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+
+    .viz-layout{display:grid;grid-template-columns:220px 1fr;gap:1.25rem}
+    @media(max-width:768px){.viz-layout{grid-template-columns:1fr}}
+
+    .stats-panel{display:flex;flex-direction:column;gap:.9rem}
+    .stat-card,.cplx-card,.explain-card{background:var(--surf);border:1px solid var(--border);border-radius:16px;padding:1.1rem 1.3rem}
+    .slabel{font-family:'Space Mono',monospace;font-size:.54rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:.45rem}
+    .sval{font-family:'Space Mono',monospace;font-size:1.55rem;font-weight:700;line-height:1}
+    .ssub{font-size:.68rem;color:var(--muted);margin-top:.35rem}
+    .cplx-row{display:flex;justify-content:space-between;font-size:.72rem;padding:.3rem 0;border-bottom:1px solid var(--border)}
+    .cplx-row:last-child{border-bottom:none}
+    .cplx-row .cl{color:var(--muted)}
+    .cplx-row .cv{font-family:'Space Mono',monospace;color:var(--white)}
+    #explain-text{font-size:.73rem;color:var(--text);line-height:1.65}
+
+    .chart-wrap{background:var(--surf);border:1px solid var(--border);border-radius:20px;padding:1.5rem 1.5rem 1rem;display:flex;flex-direction:column}
+    .chart-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem}
+    .chart-title{font-family:'Space Mono',monospace;font-size:.58rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+    .chart-status{font-family:'Space Mono',monospace;font-size:.58rem;padding:3px 10px;border-radius:99px;background:var(--border);color:var(--muted)}
+    .chart-status.running{background:color-mix(in srgb,var(--merge) 15%,transparent);color:var(--merge)}
+    .chart-status.done{background:color-mix(in srgb,#34d399 12%,transparent);color:#34d399}
+
+    #bar-container{flex:1;display:flex;align-items:flex-end;gap:2px;min-height:320px;overflow:hidden}
+    .bar{flex:1;border-radius:3px 3px 0 0;transition:height .2s ease,background .2s;min-width:2px}
+
+    .ds-preview,.compare-wrap{margin-top:1.1rem;background:var(--surf);border:1px solid var(--border);border-radius:16px;padding:1.1rem 1.3rem}
+    .ds-preview h4,.compare-wrap h4{font-family:'Space Mono',monospace;font-size:.54rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:.7rem}
+    #ds-preview-text{font-family:'Space Mono',monospace;font-size:.63rem;color:var(--muted);line-height:1.8;word-break:break-all}
+    .compare-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse}
+    th,td{text-align:left;padding:.5rem .75rem;font-size:.73rem;border-bottom:1px solid var(--border)}
+    th{font-family:'Space Mono',monospace;font-size:.53rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+    td{color:var(--text)}
+    tr:last-child td{border-bottom:none}
+    tr.arow td{color:var(--white);font-weight:700}
+    .sdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle}
+
+    @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+    .fu{animation:fadeUp .35s ease forwards}
+    .hidden{display:none!important}
+  </style>
+</head>
+<body>
+
+<!-- ══════ HOME ══════ -->
+<section id="page-home">
+  <div class="hero fu">
+    <p class="hero-eye">// Algorithm Analyzer — WASM Edition</p>
+    <h1>Smart <span>Sorting</span><br>Studio</h1>
+    <p>Load real datasets, pick an algorithm, measure time · comparisons · swaps · stability — all 6 algorithms, all 3 datasets.</p>
+    <span id="engine-badge" class="wasm-badge js">JS fallback · compile engine.cpp for WASM</span>
+  </div>
+
+  <div class="algo-grid fu">
+    <div class="algo-card" style="--cc:var(--merge)" onclick="openViz('Merge Sort')">
+      <div class="algo-icon">M</div><div class="algo-badge">Stable</div>
+      <h3>Merge Sort</h3><p>Divide &amp; conquer. Always O(n log n). Best when stability matters.</p>
+    </div>
+    <div class="algo-card" style="--cc:var(--quick)" onclick="openViz('Quick Sort')">
+      <div class="algo-icon">Q</div><div class="algo-badge">Unstable</div>
+      <h3>Quick Sort</h3><p>Fastest average-case. In-place pivot partitioning.</p>
+    </div>
+    <div class="algo-card" style="--cc:var(--heap)" onclick="openViz('Heap Sort')">
+      <div class="algo-icon">H</div><div class="algo-badge">Unstable</div>
+      <h3>Heap Sort</h3><p>Binary max-heap. Guaranteed O(n log n) worst case.</p>
+    </div>
+    <div class="algo-card" style="--cc:var(--count)" onclick="openViz('Counting Sort')">
+      <div class="algo-icon">C</div><div class="algo-badge">Stable</div>
+      <h3>Counting Sort</h3><p>Linear time for bounded integers. Zero comparisons.</p>
+    </div>
+    <div class="algo-card" style="--cc:var(--radix)" onclick="openViz('Radix Sort')">
+      <div class="algo-icon">R</div><div class="algo-badge">Stable</div>
+      <h3>Radix Sort</h3><p>Digit-by-digit sort. Bypasses comparison lower bound.</p>
+    </div>
+    <div class="algo-card" style="--cc:var(--bucket)" onclick="openViz('Bucket Sort')">
+      <div class="algo-icon">B</div><div class="algo-badge">Stable*</div>
+      <h3>Bucket Sort</h3><p>Distributes into buckets. Ideal for uniform floats.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════ VISUALIZER ══════ -->
+<section id="page-visualizer">
+  <div class="viz-wrap">
+    <div class="top-bar">
+      <button class="back-btn" onclick="goHome()">← Back to Gallery</button>
+      <div class="algo-label">
+        <span class="sub">Selected Algorithm</span>
+        <span class="name" id="algo-name">—</span>
+      </div>
+      <div class="controls">
+        <select id="ds-select" onchange="onDsChange()">
+          <option value="marks">Student Marks (100 integers)</option>
+          <option value="sales">Sales Revenue (80 decimals)</option>
+          <option value="logs">Server Latency (120 longs)</option>
+        </select>
+        <button class="run-btn" id="run-btn" onclick="runAnalysis()">▶ Run Sort</button>
+      </div>
+    </div>
+
+    <div class="viz-layout">
+      <!-- stats -->
+      <div class="stats-panel">
+        <div class="stat-card">
+          <div class="slabel">Running Time</div>
+          <div class="sval" id="s-time" style="color:#34d399">—</div>
+          <div class="ssub">Wall-clock via performance.now()</div>
+        </div>
+        <div class="stat-card">
+          <div class="slabel">Comparisons</div>
+          <div class="sval" id="s-comps" style="color:var(--merge)">—</div>
+          <div class="ssub" id="s-comps-sub"></div>
+        </div>
+        <div class="stat-card">
+          <div class="slabel">Swaps / Writes</div>
+          <div class="sval" id="s-swaps" style="color:var(--quick)">—</div>
+          <div class="ssub" id="s-swaps-sub"></div>
+        </div>
+        <div class="stat-card">
+          <div class="slabel">Stability</div>
+          <div class="sval" id="s-stable" style="font-size:1.05rem;padding-top:.2rem">—</div>
+          <div class="ssub" id="s-stable-sub"></div>
+        </div>
+        <div class="cplx-card">
+          <div class="slabel" style="margin-bottom:.8rem">Complexity</div>
+          <div class="cplx-row"><span class="cl">Best</span><span class="cv" id="cx-best">—</span></div>
+          <div class="cplx-row"><span class="cl">Average</span><span class="cv" id="cx-avg">—</span></div>
+          <div class="cplx-row"><span class="cl">Worst</span><span class="cv" id="cx-worst">—</span></div>
+          <div class="cplx-row"><span class="cl">Space</span><span class="cv" id="cx-space">—</span></div>
+        </div>
+        <div class="explain-card">
+          <div class="slabel" style="margin-bottom:.7rem">How it works</div>
+          <p id="explain-text">Select a dataset and click Run Sort.</p>
+        </div>
+      </div>
+
+      <!-- right column -->
+      <div>
+        <div class="chart-wrap">
+          <div class="chart-hdr">
+            <span class="chart-title">Dataset Visualization</span>
+            <span class="chart-status" id="chart-st">idle</span>
+          </div>
+          <div id="bar-container"></div>
+        </div>
+        <div class="ds-preview">
+          <h4>Dataset Sample (first 30 values)</h4>
+          <div id="ds-preview-text">—</div>
+        </div>
+        <div class="compare-wrap">
+          <h4>All Algorithms — Same Dataset Comparison</h4>
+          <table>
+            <thead><tr>
+              <th>Algorithm</th><th>Time (ms)</th><th>Comparisons</th>
+              <th>Swaps</th><th>Stable</th><th>Best For</th>
+            </tr></thead>
+            <tbody id="cmp-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+// ══════════════════════════════════════════════
+//  DATASETS
+// ══════════════════════════════════════════════
+const DS = {
+  marks:[72,58,91,45,83,67,39,88,55,76,62,49,95,74,31,87,60,42,78,53,
+         66,81,47,93,37,70,56,84,29,65,73,50,88,44,97,61,35,79,52,86,
+         43,68,90,57,33,82,69,48,92,38,75,54,85,41,96,63,36,80,51,89,
+         46,71,59,94,34,77,64,40,98,32,87,53,74,60,45,83,70,57,91,66,
+         49,78,55,84,42,93,62,38,76,50,81,47,68,35,87,61,44,95,30,72],
+  sales:[1245.50,980.75,2340.00,875.20,3100.80,1560.30,420.90,2780.45,
+         1890.60,3450.25,670.40,1120.85,2650.70,940.15,1780.50,3210.90,
+         580.60,2090.35,1340.80,4100.20,720.55,1980.40,2560.75,830.90,
+         3780.10,1450.65,680.30,2230.95,1670.45,4500.00,550.80,1890.25,
+         2840.70,960.40,1280.15,3620.50,750.90,2410.35,1550.60,3980.25,
+         640.75,2150.90,1730.40,4250.80,590.20,2690.55,1380.85,3150.30,
+         820.45,2480.70,1620.15,4020.60,700.35,1950.90,2780.25,890.50,
+         3390.75,1490.40,660.85,2340.20,1810.60,4140.35,570.90,2080.55,
+         1420.30,3780.75,760.20,2540.90,1690.45,3920.80,620.15,2260.35,
+         1580.70,4090.25,740.60,2430.85,1760.30,3850.50,610.90,2180.45],
+  logs:[12500,34200,8900,56700,23100,78400,15600,42300,67800,19200,
+        89100,31500,54200,10800,73600,27900,46100,62500,18300,84700,
+        38600,51200,14100,70300,25800,93500,43700,16400,59200,82100,
+        29600,47800,11300,68500,36200,55900,21700,79400,33100,57600,
+        14900,72800,40300,65100,28400,91200,48600,17200,63900,85300,
+        37400,52100,13600,76200,23900,94800,41500,58300,19700,80600,
+        35800,53400,15200,71500,26300,89700,44200,60800,22400,83100,
+        30700,49300,12100,67400,38900,56500,20100,78900,34600,52800,
+        16700,74100,27200,92600,46800,61400,18900,81200,32300,50700,
+        13800,69600,25400,88300,43100,59700,21200,77500,36100,54900,
+        17500,72300,29800,91700,47400,62900,20600,80300,33800,51500,
+        14400,70800,26900,90200,45600,61200,19400,79800,35300,53700]
+};
+
+// ══════════════════════════════════════════════
+//  ALGO METADATA (for UI + JS fallback)
+// ══════════════════════════════════════════════
+const META = {
+  'Merge Sort':    {color:'var(--merge)', stable:true,  best:'O(n log n)',avg:'O(n log n)',worst:'O(n log n)',space:'O(n)',     bestFor:'Linked lists, stability',
+    explain:'Splits the array into halves recursively, sorts each, then merges back. Always O(n log n) — never degrades. The go-to when stability matters: equal elements keep their original order.'},
+  'Quick Sort':    {color:'var(--quick)', stable:false, best:'O(n log n)',avg:'O(n log n)',worst:'O(n²)',     space:'O(log n)', bestFor:'Cache-friendly, avg case',
+    explain:'Picks a pivot, partitions smaller elements left and larger right, then recurses. Great cache behaviour — often faster than Merge Sort in practice. Worst case (already-sorted input) is O(n²).'},
+  'Heap Sort':     {color:'var(--heap)',  stable:false, best:'O(n log n)',avg:'O(n log n)',worst:'O(n log n)',space:'O(1)',     bestFor:'Guaranteed worst-case',
+    explain:'Builds a max-heap, then repeatedly extracts the max to produce sorted output. Guarantees O(n log n) worst case with O(1) extra space, but poor cache locality makes it slower in practice.'},
+  'Counting Sort': {color:'var(--count)',stable:true,  best:'O(n + k)',  avg:'O(n + k)',  worst:'O(n + k)', space:'O(k)',     bestFor:'Bounded integers (marks, ratings)',
+    explain:'Counts each value frequency, computes prefix sums, places each element in its correct sorted index. Linear time — no comparisons! Only works for integers within a known bounded range k.'},
+  'Radix Sort':    {color:'var(--radix)', stable:true,  best:'O(nk)',     avg:'O(nk)',     worst:'O(nk)',     space:'O(n + k)', bestFor:'Fixed-length integers, IDs',
+    explain:'Sorts digit-by-digit from least to most significant using a stable Counting Sort each pass. Bypasses the comparison lower bound entirely. Ideal for fixed-width integers like latencies or IDs.'},
+  'Bucket Sort':   {color:'var(--bucket)',stable:true,  best:'O(n + k)',  avg:'O(n + k)',  worst:'O(n²)',     space:'O(n)',     bestFor:'Uniform floats / decimals',
+    explain:'Distributes elements into n buckets by value range, sorts each bucket with insertion sort, then concatenates. Near-linear when data is uniformly distributed — perfect for the sales dataset.'}
+};
+const ALGOS = Object.keys(META);
+
+// ══════════════════════════════════════════════
+//  JS FALLBACK SORT IMPLEMENTATIONS
+// ══════════════════════════════════════════════
+function jsSort(algo, rawArr) {
+  const arr = rawArr.slice();
+  let c=0, s=0;
+  const t0 = performance.now();
+
+  if (algo === 'Merge Sort') {
+    function mg(a,l,m,r){
+      const L=a.slice(l,m+1),R=a.slice(m+1,r+1);
+      let i=0,j=0,k=l;
+      while(i<L.length&&j<R.length){c++;if(L[i]<=R[j])a[k++]=L[i++];else{a[k++]=R[j++];s++;}}
+      while(i<L.length)a[k++]=L[i++];while(j<R.length)a[k++]=R[j++];
+    }
+    function ms(a,l,r){if(l>=r)return;const m=(l+r)>>1;ms(a,l,m);ms(a,m+1,r);mg(a,l,m,r);}
+    ms(arr,0,arr.length-1);
+
+  } else if (algo === 'Quick Sort') {
+    function pt(a,lo,hi){const p=a[hi];let i=lo-1;for(let j=lo;j<hi;j++){c++;if(a[j]<=p){i++;[a[i],a[j]]=[a[j],a[i]];s++;}}[a[i+1],a[hi]]=[a[hi],a[i+1]];s++;return i+1;}
+    function qs(a,lo,hi){if(lo>=hi)return;const p=pt(a,lo,hi);qs(a,lo,p-1);qs(a,p+1,hi);}
+    qs(arr,0,arr.length-1);
+
+  } else if (algo === 'Heap Sort') {
+    function hpf(a,n,i){let lg=i,l=2*i+1,r=2*i+2;if(l<n){c++;if(a[l]>a[lg])lg=l;}if(r<n){c++;if(a[r]>a[lg])lg=r;}if(lg!==i){[a[i],a[lg]]=[a[lg],a[i]];s++;hpf(a,n,lg);}}
+    for(let i=(arr.length>>1)-1;i>=0;i--)hpf(arr,arr.length,i);
+    for(let i=arr.length-1;i>0;i--){[arr[0],arr[i]]=[arr[i],arr[0]];s++;hpf(arr,i,0);}
+
+  } else if (algo === 'Counting Sort') {
+    const ints=arr.map(v=>Math.round(v));
+    const mn=Math.min(...ints),mx=Math.max(...ints);
+    const cnt=new Array(mx-mn+1).fill(0);
+    for(const v of ints){cnt[v-mn]++;s++;}
+    c=ints.length;let idx=0;
+    for(let v=mn;v<=mx;v++){while(cnt[v-mn]-->0){arr[idx++]=v;s++;}}
+
+  } else if (algo === 'Radix Sort') {
+    const ints=arr.map(v=>Math.round(Math.abs(v)));
+    const mx=Math.max(...ints);
+    function cse(a,exp){const out=new Array(a.length);const cnt=new Array(10).fill(0);for(let i=0;i<a.length;i++){cnt[Math.floor(a[i]/exp)%10]++;s++;}for(let i=1;i<10;i++)cnt[i]+=cnt[i-1];for(let i=a.length-1;i>=0;i--){const d=Math.floor(a[i]/exp)%10;out[--cnt[d]]=a[i];s++;}for(let i=0;i<a.length;i++)a[i]=out[i];}
+    for(let exp=1;Math.floor(mx/exp)>0;exp*=10)cse(ints,exp);
+    for(let i=0;i<arr.length;i++)arr[i]=ints[i];
+    c=arr.length;
+
+  } else if (algo === 'Bucket Sort') {
+    const mn=Math.min(...arr),mx=Math.max(...arr),n=arr.length,rng=mx-mn+1e-9;
+    const bkts=Array.from({length:n},()=>[]);
+    for(const v of arr){let bi=Math.floor(((v-mn)/rng)*n);if(bi>=n)bi=n-1;bkts[bi].push(v);s++;}
+    let idx=0;
+    for(const b of bkts){b.sort((x,y)=>{c++;return x-y;});for(const v of b)arr[idx++]=v;}
+  }
+
+  const elapsed = performance.now()-t0;
+  const m = META[algo];
+  return {time:elapsed,comparisons:c,swaps:s,stable:m.stable,
+          complexity_best:m.best,complexity_avg:m.avg,complexity_worst:m.worst,complexity_space:m.space};
+}
+
+// ══════════════════════════════════════════════
+//  WASM BRIDGE
+//  Tries Module.analyzeSort first; falls back to jsSort
+// ══════════════════════════════════════════════
+let wasmReady = false;
+
+function tryInitWasm() {
+  if (window.wasmFailed) return;
+  if (typeof Module !== 'undefined' && Module.analyzeSort) {
+    wasmReady = true;
+    document.getElementById('engine-badge').textContent = 'WASM engine active';
+    document.getElementById('engine-badge').className = 'wasm-badge ok';
+  }
+}
+
+// Emscripten calls onRuntimeInitialized when WASM is ready
+if (typeof Module !== 'undefined') {
+  const prevInit = Module.onRuntimeInitialized;
+  Module.onRuntimeInitialized = function() {
+    if (prevInit) prevInit();
+    tryInitWasm();
+  };
+}
+
+function runSort(algo, dataArr) {
+  // WASM path
+  if (wasmReady && Module.analyzeSort) {
+    try {
+      const vec = new Module.VectorDouble();
+      dataArr.forEach(v => vec.push_back(v));
+      const r = Module.analyzeSort(vec, algo);
+      vec.delete();
+      return {
+        time: r.time, comparisons: r.comparisons, swaps: r.swaps,
+        stable: r.stable,
+        complexity_best: r.complexity_best, complexity_avg: r.complexity_avg,
+        complexity_worst: r.complexity_worst, complexity_space: r.complexity_space
+      };
+    } catch(e) {
+      console.warn('WASM call failed, falling back to JS:', e);
+    }
+  }
+  // JS fallback
+  return jsSort(algo, dataArr);
+}
+
+// ══════════════════════════════════════════════
+//  UI STATE
+// ══════════════════════════════════════════════
+let selAlgo = '', selDs = 'marks';
+
+function openViz(algo) {
+  selAlgo = algo;
+  document.getElementById('page-home').classList.add('hidden');
+  document.getElementById('page-visualizer').style.display = 'block';
+  const m = META[algo];
+  const nameEl = document.getElementById('algo-name');
+  nameEl.textContent = algo;
+  nameEl.style.color = m.color;
+  document.getElementById('run-btn').style.background = m.color;
+
+  // Pre-fill complexity (always known)
+  document.getElementById('cx-best').textContent  = m.best;
+  document.getElementById('cx-avg').textContent   = m.avg;
+  document.getElementById('cx-worst').textContent = m.worst;
+  document.getElementById('cx-space').textContent = m.space;
+  document.getElementById('explain-text').textContent = m.explain;
+
+  // Reset stats
+  ['s-time','s-comps','s-swaps','s-stable'].forEach(id=>document.getElementById(id).textContent='—');
+
+  selDs = document.getElementById('ds-select').value;
+  renderBars(DS[selDs], m.color, false);
+  updatePreview(selDs);
+  buildCmpTable(selDs, null);
+  setStatus('','idle');
+}
+
+function goHome() {
+  document.getElementById('page-visualizer').style.display = 'none';
+  document.getElementById('page-home').classList.remove('hidden');
+}
+
+function onDsChange() {
+  selDs = document.getElementById('ds-select').value;
+  renderBars(DS[selDs], META[selAlgo].color, false);
+  updatePreview(selDs);
+  buildCmpTable(selDs, null);
+  ['s-time','s-comps','s-swaps','s-stable'].forEach(id=>document.getElementById(id).textContent='—');
+  setStatus('','idle');
+}
+
+async function runAnalysis() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  setStatus('running','sorting…');
+  await new Promise(r=>setTimeout(r,30));
+
+  const result = runSort(selAlgo, DS[selDs]);
+  const m = META[selAlgo];
+  const n = DS[selDs].length;
+
+  renderBars(DS[selDs].slice().sort((a,b)=>a-b), m.color, true);
+
+  document.getElementById('s-time').textContent  = result.time < 0.01 ? '<0.01 ms' : result.time.toFixed(3)+' ms';
+  document.getElementById('s-comps').textContent = result.comparisons.toLocaleString();
+  document.getElementById('s-swaps').textContent = result.swaps.toLocaleString();
+  document.getElementById('s-comps').style.color = m.color;
+  document.getElementById('s-swaps').style.color  = m.color;
+
+  const stEl = document.getElementById('s-stable');
+  stEl.innerHTML = `<span class="sdot" style="background:${result.stable?'#34d399':'#f87171'}"></span>${result.stable?'Stable':'Unstable'}`;
+  stEl.style.color = result.stable ? '#34d399' : '#f87171';
+  document.getElementById('s-stable-sub').textContent = result.stable
+    ? 'Equal elements keep original order' : 'Equal elements may be reordered';
+  document.getElementById('s-comps-sub').textContent =
+    `n·log₂n ≈ ${Math.round(n*Math.log2(n)).toLocaleString()} theoretical`;
+  document.getElementById('s-swaps-sub').textContent = `${n} elements sorted`;
+
+  // Update complexity from result (WASM may return refined values)
+  document.getElementById('cx-best').textContent  = result.complexity_best;
+  document.getElementById('cx-avg').textContent   = result.complexity_avg;
+  document.getElementById('cx-worst').textContent = result.complexity_worst;
+  document.getElementById('cx-space').textContent = result.complexity_space;
+
+  setStatus('done','sorted ✓');
+  buildCmpTable(selDs, selAlgo);
+  btn.disabled = false;
+}
+
+// ══════════════════════════════════════════════
+//  BAR CHART
+// ══════════════════════════════════════════════
+function renderBars(data, color, sorted) {
+  const container = document.getElementById('bar-container');
+  container.innerHTML = '';
+  const show = data.slice(0, 80);
+  const max  = Math.max(...show);
+  show.forEach((v, i) => {
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = ((v/max)*100)+'%';
+    bar.style.background = sorted
+      ? `hsl(${140+i*1.8},65%,52%)`
+      : color.startsWith('var') ? `color-mix(in srgb,${color} 55%,transparent)` : color+'88';
+    container.appendChild(bar);
+  });
+}
+
+// ══════════════════════════════════════════════
+//  DATASET PREVIEW
+// ══════════════════════════════════════════════
+function updatePreview(key) {
+  const data = DS[key];
+  const preview = data.slice(0,30).map(v=>Number.isInteger(v)?v:v.toFixed(2)).join(', ');
+  document.getElementById('ds-preview-text').textContent = `[ ${preview}, … ] — ${data.length} total values`;
+}
+
+// ══════════════════════════════════════════════
+//  COMPARISON TABLE (runs all 6 algos in JS)
+// ══════════════════════════════════════════════
+function buildCmpTable(dsKey, activeAlgo) {
+  const tbody = document.getElementById('cmp-tbody');
+  tbody.innerHTML = '';
+  ALGOS.forEach(algo => {
+    const r = jsSort(algo, DS[dsKey]);  // always JS for fair table comparison
+    const m = META[algo];
+    const tr = document.createElement('tr');
+    if (algo === activeAlgo) tr.className = 'arow';
+    tr.innerHTML = `
+      <td style="color:${m.color};font-weight:600">${algo}</td>
+      <td>${r.time<0.01?'<0.01':r.time.toFixed(3)}</td>
+      <td>${r.comparisons.toLocaleString()}</td>
+      <td>${r.swaps.toLocaleString()}</td>
+      <td><span class="sdot" style="background:${m.stable?'#34d399':'#f87171'}"></span>${m.stable?'Yes':'No'}</td>
+      <td style="color:var(--muted);font-size:.7rem">${m.bestFor}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function setStatus(cls, txt) {
+  const el = document.getElementById('chart-st');
+  el.textContent = txt;
+  el.className = 'chart-status '+cls;
+}
+
+// Init
+window.addEventListener('DOMContentLoaded', () => {
+  updatePreview('marks');
+  setTimeout(tryInitWasm, 800); // give WASM a moment to init
+});
+</script>
+</body>
+</html>
